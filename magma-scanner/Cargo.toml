@@ -1,0 +1,30 @@
+[package]
+name = "magma-scanner"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tree-sitter = "0.20"
+rayon = "1.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+glob = "0.3"
+clap = { version = "4.4", features = ["derive"] }
+dotenv = "0.15"
+
+# Add grammars you need
+tree-sitter-rust = "0.20"
+tree-sitter-javascript = "0.20"
+tree-sitter-python = "0.20"
+tree-sitter-go = "0.20"
+tree-sitter-typescript = "0.20"
+tree-sitter-java = "0.20"
+tree-sitter-cpp = "0.20"
+tree-sitter-ruby = "0.20"
+tree-sitter-php = "0.20"
+
+[[bin]]
+name = "magma-scanner"
+path = "src/bin/magma-scanner.rs"
