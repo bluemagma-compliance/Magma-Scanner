@@ -1,4 +1,4 @@
-use magma_scanner::scanner::CachedScanner;
+use magma_scanner::scanner::Scanner;
 use std::{path::Path, process::Command};
 use glob::glob;
 use std::error::Error;
@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .collect();
 
     // Create scanner
-    let mut scanner = CachedScanner::new(
+    let mut scanner = Scanner::new(
         api_key,
         organization_id,
         commit_hash.clone(),
