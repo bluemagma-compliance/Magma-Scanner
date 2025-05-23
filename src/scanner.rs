@@ -46,20 +46,26 @@ impl Scanner {
     }
 
     /// Initialize a code scan and get a report ID
-    pub async fn initialize_code_scan(&mut self, file_types: Vec<String>, commit_hash: &str, branch_name: &str, repo_name: &str) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn initialize_code_scan(&mut self, file_types: Vec<String>, commit_hash: &str, branch_name: &str, repo_url: &str) -> Result<String, Box<dyn std::error::Error>> {
         // If we already have a report ID, return it
         if let Some(report_id) = &self.report_id {
             return Ok(report_id.clone());
         }
 
+        // Create a CSV string of the file extensions
+        let file_types_csv = file_types.join(",");
+        println!("File extensions (CSV): {}", file_types_csv);
+
         let url = format!("{}/org/{}/rpc/initiate-code-scan-report/", self.api_base_url, self.organization_id);
 
         let request_body = json!({
-            "file_types": file_types,
+            "file_types": file_types_csv,
             "commit_hash": commit_hash,
             "branch_name": branch_name,
-            "repo_url": repo_name
+            "repo_url": repo_url
         });
+
+        println!("Request body: {}", serde_json::to_string_pretty(&request_body).unwrap());
 
         let response = self.client.post(&url)
             .header(header::CONTENT_TYPE, "application/json")
@@ -82,6 +88,9 @@ impl Scanner {
     /// Fetch available queries for the current report
     pub async fn fetch_available_queries(&self) -> Result<Vec<TreeSitterQuery>, Box<dyn std::error::Error>> {
         let report_id = self.report_id.as_ref().ok_or("No report ID available")?;
+
+        println!("Fetching queries for report ID: {}", report_id);
+
         let url = format!(
             "{}/org/{}/rpc/get-preloaded-queries/{}",
             self.api_base_url,
@@ -137,7 +146,7 @@ impl Scanner {
     }
 
     /// Parse a file and cache the AST
-    fn parse_file(&self, file_path: &str, language_name: &str) -> Option<(Tree, String)> {
+    pub fn parse_file(&self, file_path: &str, language_name: &str) -> Option<(Tree, String)> {
         let language = get_language(language_name)?;
         let path = PathBuf::from(file_path);
         let src = fs::read_to_string(&path).ok()?;
@@ -150,7 +159,7 @@ impl Scanner {
     }
 
     /// Get the language for a file based on its extension
-    fn get_language_for_file(&self, file_path: &str) -> Option<&'static str> {
+    pub fn get_language_for_file(&self, file_path: &str) -> Option<&'static str> {
         let extension = PathBuf::from(file_path)
             .extension()?
             .to_str()?
@@ -171,7 +180,7 @@ impl Scanner {
     }
 
     /// Run a query on a tree and return the matches
-    fn run_query_on_tree(&self, tree: &Tree, source: &str, query_text: &str, language_name: &str) -> Vec<CaptureResult> {
+    pub fn run_query_on_tree(&self, tree: &Tree, source: &str, query_text: &str, language_name: &str) -> Vec<CaptureResult> {
         let language = match get_language(language_name) {
             Some(lang) => lang,
             None => return vec![],

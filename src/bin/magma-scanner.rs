@@ -1,9 +1,9 @@
 use magma_scanner::scanner::Scanner;
-use std::{path::Path, process::Command};
-use glob::glob;
+use std::{path::Path, process::Command, env, ffi::OsStr};
 use std::error::Error;
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
+use walkdir::WalkDir;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -17,11 +17,11 @@ struct Cli {
 
     /// API key for authentication
     #[arg(short, long)]
-    api_key: String,
+    api_key: Option<String>,
 
     /// Organization ID
     #[arg(short, long)]
-    organization_id: String,
+    organization_id: Option<String>,
 
     /// Report ID (optional)
     #[arg(short, long)]
@@ -54,9 +54,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     let target_dir = cli.target;
-    let api_key = cli.api_key;
-    let organization_id = cli.organization_id;
-    let report_id = cli.report_id;
+
+    // Use command line args if provided, otherwise fall back to environment variables
+    let api_key = cli.api_key
+        .or_else(|| env::var("API_KEY").ok())
+        .expect("API key must be provided via --api-key argument or API_KEY environment variable");
+
+    let organization_id = cli.organization_id
+        .or_else(|| env::var("ORGANIZATION_ID").ok())
+        .expect("Organization ID must be provided via --organization-id argument or ORGANIZATION_ID environment variable");
+
+    let report_id = cli.report_id
+        .or_else(|| env::var("REPORT_ID").ok());
+
     let poll_interval = cli.poll_interval;
     let max_polls = cli.max_polls;
 
@@ -68,19 +78,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Get git information
-    let commit_hash = get_git_commit_hash()?;
-    let branch_name = get_git_branch_name()?;
-    let repo_name = get_git_repo_name()?;
+    let commit_hash = get_git_commit_hash().unwrap_or_else(|_| "unknown".to_string());
+    let branch_name = get_git_branch_name().unwrap_or_else(|_| "unknown".to_string());
+    let repo_url = get_git_repo_url().unwrap_or_else(|_| "unknown".to_string());
 
-    println!("\n📦 Repository: {}", repo_name);
+    println!("\n📦 Repository: {}", repo_url);
     println!("🔗 Commit Hash: {}", commit_hash);
-    println!("🌿 Branch Name: {}", branch_name);
+    println!("🌿 Branch URL: {}", branch_name);
 
     // Find all supported files
     let files = find_files(&target_dir)?;
     println!("\n🔍 Scanning {} files", files.len());
 
-    // Get file extensions for API
+    // Get distinct file extensions for API
     let file_extensions: Vec<String> = files.iter()
         .filter_map(|file| {
             Path::new(file)
@@ -88,6 +98,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .and_then(|ext| ext.to_str())
                 .map(|ext| ext.to_string())
         })
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
         .collect();
 
     // Create scanner
@@ -99,7 +111,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     // Initialize scan if needed
-    let report_id = scanner.initialize_code_scan(file_extensions, &commit_hash, &branch_name, &repo_name).await?;
+    let report_id = scanner.initialize_code_scan(file_extensions, &commit_hash, &branch_name, &repo_url).await?;
     println!("Using report ID: {}", report_id);
 
     // Start continuous scanning
@@ -108,35 +120,75 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Find all supported files in the target directory
+/// Find all supported files in the target directory and all subdirectories
 fn find_files(target_dir: &str) -> Result<Vec<String>, Box<dyn Error>> {
     // Extensions for supported languages
     let extensions = [
         "rs", "js", "py", "go", "ts", "java", "cpp", "h", "hpp", "cc", "rb", "php"
     ];
 
-    let pattern = format!("{}/**/*.{{{}}}", target_dir, extensions.join(","));
-    let ignore_dirs = ["**/node_modules/**", "**/target/**", "**/dist/**", "**/build/**"];
+    // Directories to ignore
+    let ignore_dirs = ["node_modules", "target", "dist", "build"];
+
+    println!("Searching for files in directory and subdirectories: {}", target_dir);
 
     let mut files = Vec::new();
 
-    for entry in glob(&pattern)? {
-        match entry {
-            Ok(path) => {
-                let path_str = path.to_string_lossy().to_string();
+    // Ensure the target directory exists
+    let target_path = Path::new(target_dir);
+    if !target_path.exists() {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Target directory not found: {}", target_dir)
+        )));
+    }
 
-                // Skip ignored directories
-                if ignore_dirs.iter().any(|ignore| {
-                    let glob_pattern = glob::Pattern::new(ignore).unwrap();
-                    glob_pattern.matches(&path_str)
-                }) {
-                    continue;
-                }
+    // Use WalkDir to recursively walk the directory tree
+    // This will automatically walk through all subdirectories
+    let walker = WalkDir::new(target_dir)
+        .follow_links(true)  // Follow symbolic links
+        .into_iter();
 
-                files.push(path_str);
-            },
-            Err(e) => eprintln!("Error matching glob pattern: {}", e),
+    // Process each entry
+    for entry_result in walker {
+        // Handle any errors during directory traversal
+        let entry = match entry_result {
+            Ok(entry) => entry,
+            Err(e) => {
+                eprintln!("Error accessing path: {}", e);
+                continue;
+            }
+        };
+
+        let path = entry.path();
+        let path_str = path.to_string_lossy().to_string();
+
+        // Skip directories we want to ignore
+        if path.is_dir() {
+            let dir_name = path.file_name().unwrap_or_default().to_string_lossy();
+            if ignore_dirs.iter().any(|&ignore| dir_name == ignore) {
+                println!("Skipping directory: {}", path.display());
+                // This will skip the directory and all its contents
+                continue;
+            }
         }
+        // Only process files
+        else if path.is_file() {
+            // Check if the file has one of our supported extensions
+            if let Some(ext) = path.extension().and_then(OsStr::to_str) {
+                if extensions.contains(&ext) {
+                    println!("Found file: {}", path_str);
+                    files.push(path_str);
+                }
+            }
+        }
+    }
+
+    println!("Found {} files", files.len());
+
+    // If no files were found, print a warning
+    if files.is_empty() {
+        println!("Warning: No files with supported extensions found in {}", target_dir);
     }
 
     Ok(files)
@@ -170,21 +222,16 @@ fn get_git_branch_name() -> Result<String, Box<dyn Error>> {
     }
 }
 
-/// Get the git repository name
-fn get_git_repo_name() -> Result<String, Box<dyn Error>> {
+/// Get the git repository URL
+fn get_git_repo_url() -> Result<String, Box<dyn Error>> {
     let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
+        .args(["config", "--get", "remote.origin.url"])
         .output()?;
 
     if output.status.success() {
-        let repo_path = String::from_utf8(output.stdout)?;
-        let repo_name = Path::new(repo_path.trim())
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or("Failed to extract repository name")?;
-
-        Ok(repo_name.to_string())
+            let url = String::from_utf8(output.stdout)?;
+            Ok(url.trim().to_string())
     } else {
-        Err("Failed to get git repository name".into())
+        Err("Failed to get git repository URL".into())
     }
 }
